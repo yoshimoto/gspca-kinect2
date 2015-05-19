@@ -1,10 +1,11 @@
 /*
- * This file holds Kinect2-related constans and structures.
- * These are based on the OpenKinect project and libfreenect2.
- * See the following URLs for details;
- * - http://openkinect.org/wiki/
+ * Kinect2-related constans and structures
  *
  * Copyright (C) 2015  Hiromasa Yoshimoto <hrmsysmt@gmail.com>
+ *
+ * This code is based on the OpenKinect project and libfreenect2
+ * See the following URLs for details;
+ * - http://openkinect.org/wiki/
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

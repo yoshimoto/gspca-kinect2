@@ -61,6 +61,7 @@ struct cam {
 	u8 needs_full_bandwidth;/* Set this flag to notify the bandwidth calc.
 				 * code that the cam fills all image buffers to
 				 * the max, even when using compression. */
+	u8 no_clear_halt;	/* don't call usb_clear_halt() for bulk transfer */
 };
 
 struct gspca_dev;
