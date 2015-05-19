@@ -1,4 +1,3 @@
-EXTRA_CFLAGS := -I.
 EXTRA_CFLAGS += -Wall -Wno-unused-variable
 
 obj-m += gspca_kinect2.o

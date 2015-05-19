@@ -343,7 +343,7 @@ static int sd_config(struct gspca_dev *gspca_dev,
 static int sd_init(struct gspca_dev *gspca_dev)
 {
 	struct usb_device *udev = gspca_dev->dev;
-	int r;
+	int r = 0;
 
 	PDEBUG(D_PROBE, "init; iface: %d\n", gspca_dev->iface);
 
@@ -359,7 +359,7 @@ static int sd_init(struct gspca_dev *gspca_dev)
 static int sd_start(struct gspca_dev *gspca_dev)
 {
 	struct sd *sd = (struct sd *) gspca_dev;
-	int r;
+	int r = 0;
 
 	PDEBUG(D_STREAM, "sd_start iface:%d\n", gspca_dev->iface);
 

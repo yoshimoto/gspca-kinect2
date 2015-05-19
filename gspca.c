@@ -918,7 +918,7 @@ static int gspca_init_transfer(struct gspca_dev *gspca_dev)
 		}
 
 		/* clear the bulk endpoint */
-		if (!gspca_dev->no_clear_halt && gspca_dev->cam.bulk)
+		if (!gspca_dev->cam.no_clear_halt && gspca_dev->cam.bulk)
 			usb_clear_halt(gspca_dev->dev,
 					gspca_dev->urb[0]->pipe);
 
