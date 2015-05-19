@@ -17,7 +17,7 @@ $ sudo /sbin/insmod ./kinect2.ko
 
 This driver provides v4l2 interface; color stream is mapped to /dev/video0, and depth is mapped to /dev/video1.
 
-### Captures color video
+### Capture color video
 
 ```
 $ ffmpeg  -framerate 30 -video_size 640x480 -i /dev/video0  test.avi  

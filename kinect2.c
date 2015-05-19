@@ -26,6 +26,7 @@
 #define MODULE_NAME "kinect2"
 
 #include <media/v4l2-ioctl.h>
+#include <linux/workqueue.h>
 #include "gspca.h"
 
 #include "kinect2.h"
@@ -43,45 +44,52 @@ MODULE_LICENSE("GPL");
  */
 #define REQUEST_MAGIC   0x06022009
 #define RESPONSE_MAGIC  0x0A6FE000
-
-#define KCMD_READ_FIRMWARE_VERSIONS 0x02
-#define KCMD_INIT_STREAMS 0x09
-#define KCMD_READ_DATA_0x14 0x14
-#define KCMD_READ_STATUS 0x16
-#define KCMD_READ_DATA_PAGE 0x22
-#define KCMD_READ_DATA_0x26 0x26
-
-#define KCMD_SET_STREAMING 0x2B
-#define KCMD_SET_MODE 0x4B
-
-#define KCMD_0x46 0x46
-#define KCMD_0x47 0x47
-
-#define KCMD_0x0A 0x0A
+#define KCMD_READ_FIRMWARE_VERSIONS	0x02
+#define KCMD_READ_DATA_PAGE		0x22
+#define KCMD_SET_STREAMING		0x2B
+#define KCMD_START_DEPTH		0x09
+#define KCMD_STOP_DEPTH			0x0A
 
 #define BULK_SIZE 0x8000
+
+/*
+ * KINECT2_USE_WORKQUEUE enables workaround codes for bulk transfer error
+ * that is caused by usb_clear_halt() in gspca.c.
+ */
+#define KINECT2_USE_WORKQUEUE 1
+
+static const u32 start_cmd = 0x01;
+static const u32 stop_cmd  = 0x00;
 
 #define CHECK(r) do { if (!(r)) PDEBUG(D_USBO, __FILE__":%d failed\n", __LINE__); } while (0)
 
 struct request {
-    u32 magic;
-    u32 cmdseq;
-    u32 reply_len;
-    u32 cmd;
-    u32 reserved0;
-    u32 param[8];
+	u32 magic;
+	u32 cmdseq;
+	u32 reply_len;
+	u32 cmd;
+	u32 reserved0;
+	u32 param[8];
 } __attribute__((packed));
 
 /* specific camera descriptor */
 struct sd {
-     struct gspca_dev gspca_dev; /* !! must be the first item */
+	struct gspca_dev gspca_dev; /* !! must be the first item */
 
-     u32 cmdseq;              /* a sequence number for control commands */
-     struct request request;  /* a buffer for sending control commands */
-     u32 response[32];        /* a buffer for receiving response */
-     u8  synced;              /* used by sd_depth_pkt_scan() */
+	u32 cmdseq;              /* a sequence number for control commands */
+	struct request request;  /* a buffer for sending control commands */
+	u32 response[32];        /* a buffer for receiving response */
+	u8  synced;              /* used by sd_depth_pkt_scan() */
 
-     struct v4l2_ioctl_ops ioctl_ops;
+	struct v4l2_ioctl_ops ioctl_ops;
+
+#if KINECT2_USE_WORKQUEUE
+	struct work_struct work_struct;
+	struct workqueue_struct *work_thread;
+	wait_queue_head_t wq;
+	int active_urbs;
+	u8 shutdown;
+#endif
 };
 
 /* Grey bit-packed formats */
@@ -144,8 +152,8 @@ static int send_cmd(struct gspca_dev *gspca_dev, u32 cmd,
 	int res, i;
 
 	if (num_param > ARRAY_SIZE(req->param)) {
-	     PDEBUG(D_USBO, "send_cmd: too many params (%d)\n", num_param);
-	     return -1;
+		PDEBUG(D_USBO, "send_cmd: too many params (%d)\n", num_param);
+		return -1;
 	}
 
 	req->magic = cpu_to_le32(REQUEST_MAGIC);
@@ -153,7 +161,7 @@ static int send_cmd(struct gspca_dev *gspca_dev, u32 cmd,
 	req->reply_len = cpu_to_le32(reply_len);
 	req->cmd = cpu_to_le32(cmd);
 	for (i=0; i<num_param; ++i)
-	     req->param[i] = cpu_to_le32(param[i]);
+		req->param[i] = cpu_to_le32(param[i]);
 
 	res = usb_bulk_msg(udev, usb_sndbulkpipe(udev, 0x002),
 			   req, sizeof(*req) - sizeof(req->param) + num_param*4,
@@ -161,19 +169,19 @@ static int send_cmd(struct gspca_dev *gspca_dev, u32 cmd,
 	/*PDEBUG(D_USBO, "Control cmd=%04x seq=%04x len=%04x actual_len:%04x: %d", cmd,
 	  sd->cmdseq, num_param, actual_len, res);*/
 	if (res < 0) {
-	     PDEBUG(D_USBO, "send_cmd: send failed (%d)\n", res);
-	     return res;
+		PDEBUG(D_USBO, "send_cmd: send failed (%d)\n", res);
+		return res;
 	}
 
 	if (reply_len) {
-	     res = usb_bulk_msg(udev, usb_rcvbulkpipe(udev, 0x081),
-				replybuf, reply_len,
-				&actual_len, USB_CTRL_SET_TIMEOUT);
-	     if (res < 0) {
-		  PDEBUG(D_USBO, "send_cmd: recv failed (%d)\n", res);
-		  return res;
-	     }
-	     result = actual_len;
+		res = usb_bulk_msg(udev, usb_rcvbulkpipe(udev, 0x081),
+				   replybuf, reply_len,
+				   &actual_len, USB_CTRL_SET_TIMEOUT);
+		if (res < 0) {
+			PDEBUG(D_USBO, "send_cmd: recv failed (%d)\n", res);
+			return res;
+		}
+		result = actual_len;
 	}
 
 	/* Received completion packet */
@@ -181,16 +189,16 @@ static int send_cmd(struct gspca_dev *gspca_dev, u32 cmd,
 			   sd->response, sizeof(sd->response),
 			   &actual_len, USB_CTRL_SET_TIMEOUT);
 	if (res < 0) {
-	     PDEBUG(D_USBO, "send_cmd: read failed (%d)\n", res);
-	     return res;
+		PDEBUG(D_USBO, "send_cmd: read failed (%d)\n", res);
+		return res;
 	}
 
 	if (cpu_to_le32(RESPONSE_MAGIC) != sd->response[0]) {
-	     PDEBUG(D_USBO, "send_cmd: Bad magic %08x\n", sd->response[0]);
-	     return -1;
+		PDEBUG(D_USBO, "send_cmd: Bad magic %08x\n", sd->response[0]);
+		return -1;
 	} else if (cpu_to_le32(sd->cmdseq) != sd->response[1]) {
-	     PDEBUG(D_USBO, "send_cmd: Bad cmd seq %08x\n", sd->response[1]);
-	     return -1;
+		PDEBUG(D_USBO, "send_cmd: Bad cmd seq %08x\n", sd->response[1]);
+		return -1;
 	}
 
 	sd->cmdseq++;
@@ -201,130 +209,98 @@ static int send_cmd(struct gspca_dev *gspca_dev, u32 cmd,
 static inline void sd_color_pkt_scan(struct gspca_dev *gspca_dev,
 				     u8 *data, int datalen)
 {
-    int type;
+	int type;
 
-    if (gspca_dev->image_len == 0) {
-	struct kinect2_color_header *h = (struct kinect2_color_header*)data;
-	if (0x42424242 != h->magic) {
-	    PDEBUG(D_STREAM, "bad magic\n");
-	    return ;
+	if (gspca_dev->image_len == 0) {
+		struct kinect2_color_header *h = (struct kinect2_color_header*)data;
+		if (0x42424242 != h->magic) {
+			PDEBUG(D_STREAM, "bad magic\n");
+			return ;
+		}
 	}
-    }
 
-    if (BULK_SIZE != datalen) 
-	type = LAST_PACKET;
-    else 
-	type = gspca_dev->image_len?INTER_PACKET:FIRST_PACKET;
+	if (BULK_SIZE != datalen) 
+		type = LAST_PACKET;
+	else 
+		type = gspca_dev->image_len?INTER_PACKET:FIRST_PACKET;
 
-    gspca_frame_add(gspca_dev, type, data, datalen);
+	gspca_frame_add(gspca_dev, type, data, datalen);
 }
 
 static inline void sd_depth_pkt_scan(struct gspca_dev *gspca_dev, u8 *data, int datalen)
 {
-     struct sd *sd = (struct sd *) gspca_dev;
+	struct sd *sd = (struct sd *) gspca_dev;
 
-     PDEBUG(D_STREAM, "pktscan\n");
-
-     if (gspca_dev->pkt_size != datalen) {
-	  struct kinect2_depth_footer *f;
-	  f = (struct kinect2_depth_footer*)(data + datalen - sizeof(*f));
-	  if (0x00 != f->magic0) {
-	       PDEBUG(D_PACK, " bad footer %d/%d\n", datalen, gspca_dev->pkt_size);
-	       goto discard;
-	  } else if (KINECT2_DEPTH_IMAGE_SIZE != f->length) {
-	       PDEBUG(D_PACK, " wrong length\n");
-	       goto discard;
-	  } else {
-	       if (sd->synced) {
-		    gspca_frame_add(gspca_dev,
-				    (9==f->subsequence)?LAST_PACKET:INTER_PACKET,
-				    data, datalen);
-	       } else {
-		    if (9==f->subsequence) 
-			 sd->synced = 1;
-	       }
-	  }
-     } else {
-	  if (sd->synced) {
-	       gspca_frame_add(gspca_dev,
-			       (0==gspca_dev->image_len)?FIRST_PACKET:INTER_PACKET,
-			       data, datalen);
-	  } else {
-	       goto discard;
-	  }
-     }
-     return;
+	if (gspca_dev->pkt_size != datalen) {
+		struct kinect2_depth_footer *f;
+		f = (struct kinect2_depth_footer*)(data + datalen - sizeof(*f));
+		if (0x00 != f->magic0) {
+			PDEBUG(D_PACK, " bad footer %d/%d\n", datalen, gspca_dev->pkt_size);
+			goto discard;
+		} else if (KINECT2_DEPTH_IMAGE_SIZE != f->length) {
+			PDEBUG(D_PACK, " wrong length\n");
+			goto discard;
+		} else {
+			if (sd->synced) {
+				gspca_frame_add(gspca_dev,
+						(9==f->subsequence)?LAST_PACKET:INTER_PACKET,
+						data, datalen);
+			} else {
+				if (9==f->subsequence) 
+					sd->synced = 1;
+			}
+		}
+	} else {
+		if (sd->synced) {
+			gspca_frame_add(gspca_dev,
+					(0==gspca_dev->image_len)?FIRST_PACKET:INTER_PACKET,
+					data, datalen);
+		} else {
+			goto discard;
+		}
+	}
+	return;
 
 discard:
-     /* Discard data until a new frame starts. */
-     gspca_dev->last_packet_type = DISCARD_PACKET;
-     sd->synced = 0;
+	/* Discard data until a new frame starts. */
+	gspca_dev->last_packet_type = DISCARD_PACKET;
+	sd->synced = 0;
 }
 
 static inline void sd_pkt_scan(struct gspca_dev *gspca_dev, u8 *data, int datalen)
 {
-    switch (gspca_dev->iface) {
-    case COLOR_IF: sd_color_pkt_scan(gspca_dev, data, datalen); break;
-    case DEPTH_IF: sd_depth_pkt_scan(gspca_dev, data, datalen); break;
-    }
+	switch (gspca_dev->iface) {
+	case COLOR_IF: sd_color_pkt_scan(gspca_dev, data, datalen); break;
+	case DEPTH_IF: sd_depth_pkt_scan(gspca_dev, data, datalen); break;
+	}
 }
 
 static int
 get_iso_max_packet_size(struct gspca_dev *gspca_dev,
 			int iface, int alt, int endpoint)
 {
-     int i;
-     int sz = 1024;
-     struct usb_interface *intf;
-     struct usb_host_interface *host;
-     intf = usb_ifnum_to_if(gspca_dev->dev, iface);
-     if (!intf) {
-	  PDEBUG(D_PROBE, "usb_ifnum_to_if(%d) failed", iface);
-	  goto exit;
-     }
-     host = usb_altnum_to_altsetting(intf, alt);
-     if (!host) {
-	  PDEBUG(D_PROBE, "usb_altnum_to_altsetting(%d,%d) failed", iface, alt);
-	  goto exit;
-     }
-     for (i = 0; i < host->desc.bNumEndpoints; ++i) {
-	  if (host->endpoint[i].desc.bEndpointAddress == endpoint &&
-	      (host->endpoint[i].desc.bmAttributes & USB_ENDPOINT_XFERTYPE_MASK) == USB_ENDPOINT_XFER_ISOC) {
-	       sz = host->endpoint[i].ss_ep_comp.wBytesPerInterval;
-	  }
-     }
+	int i;
+	int sz = 1024;
+	struct usb_interface *intf;
+	struct usb_host_interface *host;
+	intf = usb_ifnum_to_if(gspca_dev->dev, iface);
+	if (!intf) {
+		PDEBUG(D_PROBE, "usb_ifnum_to_if(%d) failed", iface);
+		goto exit;
+	}
+	host = usb_altnum_to_altsetting(intf, alt);
+	if (!host) {
+		PDEBUG(D_PROBE, "usb_altnum_to_altsetting(%d,%d) failed", iface, alt);
+		goto exit;
+	}
+	for (i = 0; i < host->desc.bNumEndpoints; ++i) {
+		if (host->endpoint[i].desc.bEndpointAddress == endpoint &&
+		    (host->endpoint[i].desc.bmAttributes & USB_ENDPOINT_XFERTYPE_MASK) == USB_ENDPOINT_XFER_ISOC) {
+			sz = host->endpoint[i].ss_ep_comp.wBytesPerInterval;
+		}
+	}
 exit:
-     return sz;
-}
-
-static int suspend_interface(struct usb_device *udev, int suspend) {
-     return usb_control_msg(udev, usb_sndctrlpipe(udev, 0),
-			    USB_REQ_SET_FEATURE,
-			    USB_RECIP_INTERFACE,
-			    USB_INTRF_FUNC_SUSPEND,
-			    (suspend)?(USB_INTRF_FUNC_SUSPEND_LP|
-				       USB_INTRF_FUNC_SUSPEND_RW):0, NULL, 0,
-			    USB_CTRL_SET_TIMEOUT);
-}
-
-static int power_device(struct usb_device *udev, int onoff) {
-     u8 request = onoff?USB_REQ_SET_FEATURE:USB_REQ_CLEAR_FEATURE;
-
-     int r = usb_control_msg(udev, usb_sndctrlpipe(udev, 0),
-			     request,
-			     USB_RECIP_DEVICE,
-			     USB_DEVICE_U1_ENABLE,
-			     0, NULL, 0,
-			     USB_CTRL_SET_TIMEOUT);
-     if (0==r) {
-	  r = usb_control_msg(udev, usb_sndctrlpipe(udev, 0),
-			      request,
-			      USB_RECIP_DEVICE,
-			      USB_DEVICE_U2_ENABLE,
-			      0, NULL, 0,
-			      USB_CTRL_SET_TIMEOUT);
-     }
-     return r;
+	return sz;
 }
 
 // if no super speed hubs in between, then it is equal to tTPTransmissionDelay(=40ns)
@@ -337,195 +313,314 @@ static int set_isochronous_delay(struct usb_device *udev, int nanosec)
 			    NULL, 0, USB_CTRL_SET_TIMEOUT);
 }
 
+#if KINECT2_USE_WORKQUEUE
+static void bulk_pkt(struct urb *urb)
+{
+	struct gspca_dev *gspca_dev = (struct gspca_dev *) urb->context;
+	int r;
+
+	if (!gspca_dev->streaming)
+		return;
+	switch (urb->status) {
+	case 0:
+		break;
+	case -ESHUTDOWN: /* disconnection */
+	default:
+		return;
+	}
+
+	sd_color_pkt_scan(gspca_dev, urb->transfer_buffer, urb->actual_length);
+
+	r = usb_submit_urb(urb, GFP_ATOMIC);
+	if (r < 0) {
+		pr_err("usb_submit_urb() ret %d\n", r);
+	}
+}
+
+static void kinect2_dostream(struct work_struct *work)
+{
+	struct sd *sd = container_of(work, struct sd, work_struct);
+	struct gspca_dev *gspca_dev = &sd->gspca_dev;
+	struct usb_device *udev = gspca_dev->dev;
+	int r;
+	struct urb *urbs[4], *urb;
+	int i;
+
+	for (i = 0; i<ARRAY_SIZE(urbs); ++i) {
+		urb = usb_alloc_urb(0, GFP_KERNEL);
+
+		urbs[i] = urb;
+		if (!urb) {
+			PDEBUG(D_STREAM, "usb_alloc_urb failed\n");
+			goto exit;
+		}
+
+		urb->transfer_buffer = usb_alloc_coherent(udev,
+							  BULK_SIZE,
+							  GFP_KERNEL,
+							  &urb->transfer_dma);
+		if (!urb->transfer_buffer) {
+			PDEBUG(D_STREAM, "usb_alloc_coherent() failed\n");
+			goto exit;
+		}
+
+		urb->dev = udev;
+		urb->context = gspca_dev;
+		urb->transfer_buffer_length = BULK_SIZE;
+		urb->complete = bulk_pkt;
+		urb->pipe = usb_rcvbulkpipe(udev, 0x083);
+		urb->transfer_flags = URB_NO_TRANSFER_DMA_MAP;
+
+		if (r < 0) {
+			PDEBUG(D_STREAM, "submit_urb() failed; %d\n", r);
+			goto exit;
+		}
+	}
+	sd->active_urbs = 0;
+     
+	for (i = 0; i<ARRAY_SIZE(urbs); ++i) {
+		r = usb_submit_urb(urbs[i], GFP_KERNEL);
+		if (r < 0) {
+			PDEBUG(D_STREAM, "submit_urb() failed; %d\n", r);
+			goto exit;
+		}
+		sd->active_urbs++;
+	}
+
+	PDEBUG(D_PROBE, "send_cmd\n");
+	r = send_cmd(gspca_dev, KCMD_SET_STREAMING, &start_cmd, 1, NULL, 0);
+	CHECK(0==r);
+
+	while (gspca_dev->streaming && !sd->shutdown && sd->active_urbs > 0) {
+		r = wait_event_interruptible_timeout(sd->wq,
+						     gspca_dev->streaming && !sd->shutdown && sd->active_urbs > 0,
+						     10000);
+	}
+
+	r = send_cmd(gspca_dev, KCMD_SET_STREAMING, &stop_cmd, 1, NULL, 0);
+	CHECK(0==r);
+
+exit:
+	for (i = 0; i<ARRAY_SIZE(urbs); ++i) {
+		if (urbs[i]) {
+			usb_kill_urb(urbs[i]);
+			if (urbs[i]->transfer_buffer)  {
+				usb_free_coherent(udev,
+						  urbs[i]->transfer_buffer_length,
+						  urbs[i]->transfer_buffer,
+						  urbs[i]->transfer_dma);
+			}
+			usb_free_urb(urbs[i]);
+		}
+	}
+
+}
+#endif
 
 /* This function is called at probe time just before sd_init */
 static int sd_config(struct gspca_dev *gspca_dev,
 		     const struct usb_device_id *id)
 {
      
-     struct sd *sd = (struct sd *) gspca_dev;
-     struct cam *cam = &gspca_dev->cam;
+	struct sd *sd = (struct sd *) gspca_dev;
+	struct cam *cam = &gspca_dev->cam;
 
-     sd->cmdseq = 0;
+	sd->cmdseq = 0;
 
-     switch (gspca_dev->iface) {
-     case COLOR_IF:
-	  cam->cam_mode = color_mode;
-	  cam->mode_framerates = color_framerates;
-	  cam->nmodes = ARRAY_SIZE(color_mode);
+	switch (gspca_dev->iface) {
+	case COLOR_IF:
+		cam->cam_mode = color_mode;
+		cam->mode_framerates = color_framerates;
+		cam->nmodes = ARRAY_SIZE(color_mode);
 
-	  /* setup bulk transfer */
-	  cam->bulk = 1;
-	  cam->bulk_size = BULK_SIZE;
-	  cam->bulk_nurbs = MAX_NURBS;
-	  gspca_dev->xfer_ep = 0x083;
-	  /*cam->needs_full_bandwidth = 1;*/
-	  break;
+#if KINECT2_USE_WORKQUEUE
+		/* bulk transfer will be handled by kinect2_dostream() */
+		cam->bulk = 1;
+		cam->no_urb_create = 1;
+		cam->bulk_nurbs = 0;
+#else
+		/* setup bulk transfer */
+		cam->bulk = 1;
+		cam->bulk_size = BULK_SIZE;
+		cam->bulk_nurbs = MAX_NURBS;
+		gspca_dev->xfer_ep = 0x083;
+#endif
+		break;
 
-     case DEPTH_IF:
-	  cam->cam_mode = depth_mode;
-	  cam->mode_framerates = depth_framerates;
-	  cam->nmodes = ARRAY_SIZE(depth_mode);
-	  /* setup isoc transfer */
-	  gspca_dev->xfer_ep = 0x084;
-	  gspca_dev->pkt_size = get_iso_max_packet_size(gspca_dev,
-							DEPTH_IF, 1, 0x84);
-	  PDEBUG(D_PROBE, "isoc packet size: %d", gspca_dev->pkt_size);
-	  cam->bulk = 0;
-	  cam->npkt = 16;
-	  cam->needs_full_bandwidth = 1;
-	  break;
-     default:
-	  PDEBUG(D_PROBE, "iface is %d, 0 or 1 expected\n", gspca_dev->iface);
-	  return -1;
-     }
+	case DEPTH_IF:
+		cam->cam_mode = depth_mode;
+		cam->mode_framerates = depth_framerates;
+		cam->nmodes = ARRAY_SIZE(depth_mode);
+		/* setup isoc transfer */
+		gspca_dev->xfer_ep = 0x084;
+		gspca_dev->pkt_size = get_iso_max_packet_size(gspca_dev,
+							      DEPTH_IF, 1, 0x84);
+		PDEBUG(D_PROBE, "isoc packet size: %d", gspca_dev->pkt_size);
+		cam->bulk = 0;
+		cam->npkt = 32;
+		cam->needs_full_bandwidth = 1;
+		break;
+	default:
+		PDEBUG(D_PROBE, "iface is %d, 0 or 1 expected\n", gspca_dev->iface);
+		return -1;
+	}
 
-     /* Replaces vdev.ioctl_ops to override vidioc_default() */
-     memcpy(&sd->ioctl_ops, gspca_dev->vdev.ioctl_ops, sizeof(sd->ioctl_ops));
-     sd->ioctl_ops.vidioc_default = sd_private_ioctl;
-     gspca_dev->vdev.ioctl_ops = &sd->ioctl_ops;
+	/* Replaces vdev.ioctl_ops to override vidioc_default() */
+	memcpy(&sd->ioctl_ops, gspca_dev->vdev.ioctl_ops, sizeof(sd->ioctl_ops));
+	sd->ioctl_ops.vidioc_default = sd_private_ioctl;
+	gspca_dev->vdev.ioctl_ops = &sd->ioctl_ops;
 
-     return 0;
+#if KINECT2_USE_WORKQUEUE
+	INIT_WORK(&sd->work_struct, kinect2_dostream);
+	init_waitqueue_head(&sd->wq);
+#endif
+
+	return 0;
 }
-
 
 /* this function is called at probe and resume time */
 static int sd_init(struct gspca_dev *gspca_dev)
 {
-     struct usb_device *udev = gspca_dev->dev;
-     int r;
+	struct usb_device *udev = gspca_dev->dev;
+	int r;
 
-     PDEBUG(D_PROBE, "init; iface: %d\n", gspca_dev->iface);
+	PDEBUG(D_PROBE, "init; iface: %d\n", gspca_dev->iface);
 
-     r = power_device(udev, 1);
-     CHECK(r==0);
-     r = suspend_interface(udev, 1);
-     CHECK(r==0);
+	switch (gspca_dev->iface) {
+	case DEPTH_IF:
+		r = set_isochronous_delay(udev, 40);
+		CHECK(r==0);
+		break;
+	}
 
-     return 0;
+	return 0;
 }
-
-
-static int sd_isoc_init(struct gspca_dev *gspca_dev)
-{
-     int r;
-     struct usb_device *udev = gspca_dev->dev;
-     PDEBUG(D_PROBE, "isoc_init; %d\n", gspca_dev->iface);
-     switch (gspca_dev->iface) {
-     case DEPTH_IF:
-	 r = set_isochronous_delay(udev, 40);
-	 CHECK(r==0);
-
-	 break;
-     }
-     return 0;
-}
-
 
 static int sd_start(struct gspca_dev *gspca_dev)
 {
-     struct usb_device *udev = gspca_dev->dev;
-     struct sd *sd = (struct sd *) gspca_dev;
-     int r;
-     static const u32 start_cmd = 0x01;
+	struct sd *sd = (struct sd *) gspca_dev;
+	int r;
 
-     sd->synced = 0;
-     PDEBUG(D_PROBE, "sd_start iface:%d\n", gspca_dev->iface);
+	sd->synced = 0;
+	PDEBUG(D_PROBE, "sd_start iface:%d\n", gspca_dev->iface);
 
-     r = power_device(udev, 1);
-     CHECK(r==0);
-     r = suspend_interface(udev, 0);
-     CHECK(r==0);
+	switch (gspca_dev->iface) {
+	case COLOR_IF:
+#if KINECT2_USE_WORKQUEUE
+		/* Start the workqueue function to do the streaming */
+		sd->shutdown = 0;
+		sd->work_thread = create_singlethread_workqueue(MODULE_NAME);
+		queue_work(sd->work_thread, &sd->work_struct);
+#else
+		r = send_cmd(gspca_dev, KCMD_SET_STREAMING, &start_cmd, 1, NULL, 0);
+		CHECK(0==r);
+#endif
+		break;
+	case DEPTH_IF:
+		r = send_cmd(gspca_dev, KCMD_START_DEPTH, NULL, 0, NULL, 0);
+		CHECK(0==r);
+		break;
+	}
 
-     r = send_cmd(gspca_dev, KCMD_INIT_STREAMS, NULL, 0, NULL, 0);
-     CHECK(0==r);
-     r = send_cmd(gspca_dev, KCMD_SET_STREAMING, &start_cmd, 1, NULL, 0);
-     CHECK(0==r);
 
-     switch (gspca_dev->iface) {
-     case COLOR_IF:
-	  r = send_cmd(gspca_dev, KCMD_0x0A, NULL, 0, NULL, 0);
-	  CHECK(0==r);
-	  break;
-     }
-
-     return 0;
+	return 0;
 }
 
 
 static void sd_stopN(struct gspca_dev *gspca_dev)
 {
-     int r;
-     static const u32 stop_cmd = 0x00;
+#if KINECT2_USE_WORKQUEUE
+	struct sd *sd = (struct sd *) gspca_dev;
+#endif
+	int r;
 
-     PDEBUG(D_PROBE, "Kinect2 stopN; iface: %d\n", gspca_dev->iface);
+	PDEBUG(D_PROBE, "Kinect2 stopN; iface: %d\n", gspca_dev->iface);
 
-     r = send_cmd(gspca_dev, KCMD_SET_STREAMING, &stop_cmd, 1, NULL, 0);
-     CHECK(0==r);
+	switch (gspca_dev->iface) {
+	case COLOR_IF:
+#if KINECT2_USE_WORKQUEUE
+		sd->shutdown = 1;
+#else
+		r = send_cmd(gspca_dev, KCMD_SET_STREAMING, &stop_cmd, 1, NULL, 0);
+		CHECK(0==r);
+#endif
+		break;
+	case DEPTH_IF:
+		r = send_cmd(gspca_dev, KCMD_STOP_DEPTH, NULL, 0, NULL, 0);
+		CHECK(0==r);
+		break;
+	}
 }
 
+
+
+#if KINECT2_USE_WORKQUEUE
 static void sd_stop0(struct gspca_dev *gspca_dev)
 {
-     struct usb_device *udev = gspca_dev->dev;
-     int r;
-     r = suspend_interface(udev, 1);
-     CHECK(r==0);
-     r = power_device(udev, 0);
-     CHECK(r==0);
+	struct sd *sd = (struct sd *) gspca_dev;
 
+	PDEBUG(D_PROBE, "Kinect2 stop0; iface: %d\n", gspca_dev->iface);
+
+	switch (gspca_dev->iface) {
+	case COLOR_IF:
+		destroy_workqueue(sd->work_thread);
+		sd->work_thread = NULL;
+		break;
+	}
 }
+#endif
 
 static long sd_private_ioctl(struct file *file, void *fh,
 			     bool valid_prio, unsigned int cmd, void *arg)
 {
-     struct gspca_dev *gspca_dev = video_drvdata(file);
+	struct gspca_dev *gspca_dev = video_drvdata(file);
 
-     static const struct entry {
-	 u32 cmd;
-	 int len;
-     } table[] = {
-	 {0x04, sizeof(struct kinect2_color_camera_param)},
-	 {0x03, sizeof(struct kinect2_depth_camera_param)},
-	 {0x02, sizeof(struct kinect2_p0table)},
-     };
+	static const struct entry {
+		u32 cmd;
+		int len;
+	} table[] = {
+		{0x04, sizeof(struct kinect2_color_camera_param)},
+		{0x03, sizeof(struct kinect2_depth_camera_param)},
+		{0x02, sizeof(struct kinect2_p0table)},
+	};
 
-     int r;
-     void *buf = NULL;
-     struct kinect2_ioctl_req * req = arg;
-     int num = _IOC_NR(cmd) - BASE_VIDIOC_PRIVATE;
+	int r;
+	void *buf = NULL;
+	struct kinect2_ioctl_req * req = arg;
+	int num = _IOC_NR(cmd) - BASE_VIDIOC_PRIVATE;
 
-     if (num < 0 || ARRAY_SIZE(table) <= num) {
-	 r = -EOPNOTSUPP;
-	 goto out;
-     }
-     if (req->len != table[num].len) {
-	 r = -EINVAL;
-	 goto out;
-     }
+	if (num < 0 || ARRAY_SIZE(table) <= num) {
+		r = -EOPNOTSUPP;
+		goto out;
+	}
+	if (req->len != table[num].len) {
+		r = -EINVAL;
+		goto out;
+	}
 
-     buf = kmalloc(table[num].len, GFP_KERNEL);
-     if (!buf) {
-	 r = -ENOMEM;
-	 goto out;
-     }
+	buf = kmalloc(table[num].len, GFP_KERNEL);
+	if (!buf) {
+		r = -ENOMEM;
+		goto out;
+	}
 
-     r = send_cmd(gspca_dev, KCMD_READ_DATA_PAGE, &table[num].cmd, 1,
-		  buf, table[num].len);
-     if (table[num].len == r) {
-	  r = copy_to_user((void __user *)req->ptr, buf, table[num].len);
-	  if (r) {
-	      PDEBUG(D_PROBE, "copy_to_user() failed\n");
-	      r = -EFAULT;
-	  }
-     } else {
-	 PDEBUG(D_PROBE, "send_cmd() returns %d, expected %d",
-		r, table[num].len);
-	 r = -EFAULT;
-     }
+	r = send_cmd(gspca_dev, KCMD_READ_DATA_PAGE, &table[num].cmd, 1,
+		     buf, table[num].len);
+	if (table[num].len == r) {
+		r = copy_to_user((void __user *)req->ptr, buf, table[num].len);
+		if (r) {
+			PDEBUG(D_PROBE, "copy_to_user() failed\n");
+			r = -EFAULT;
+		}
+	} else {
+		PDEBUG(D_PROBE, "send_cmd() returns %d, expected %d",
+		       r, table[num].len);
+		r = -EFAULT;
+	}
 out:
-     if (buf)
-	  kfree(buf);
-     return r;
+	if (buf)
+		kfree(buf);
+	return r;
 }
 
 
@@ -534,38 +629,41 @@ static const struct sd_desc sd_desc = {
 	.name      = MODULE_NAME,
 	.config    = sd_config,
 	.init      = sd_init,
-	.isoc_init = sd_isoc_init,
 	.start     = sd_start,
 	.stopN     = sd_stopN,
+#if KINECT2_USE_WORKQUEUE
 	.stop0     = sd_stop0,
+	.pkt_scan  = sd_depth_pkt_scan,
+#else
 	.pkt_scan  = sd_pkt_scan,
+#endif
 };
 
 static const struct usb_device_id device_table[] = {
-     /* kinect for windows 2 */
-     {USB_DEVICE(0x045e, 0x02d8)},
-     /* kinect for windows 2 preview? */
-     {USB_DEVICE(0x045e, 0x02c4)}, 
-     {}
+	/* kinect for windows 2 */
+	{USB_DEVICE(0x045e, 0x02d8)},
+	/* kinect for windows 2 preview? */
+	{USB_DEVICE(0x045e, 0x02c4)}, 
+	{}
 };
 
 MODULE_DEVICE_TABLE(usb, device_table);
 
 static int sd_probe(struct usb_interface *intf, const struct usb_device_id *id)
 {
-     return gspca_dev_probe2(intf, id, &sd_desc,
-			     sizeof(struct sd), THIS_MODULE);
+	return gspca_dev_probe2(intf, id, &sd_desc,
+				sizeof(struct sd), THIS_MODULE);
 }
 
 static struct usb_driver sd_driver = {
-     .name       = KBUILD_MODNAME,
-     .id_table   = device_table,
-     .probe      = sd_probe,
-     .disconnect = gspca_disconnect,
+	.name       = KBUILD_MODNAME,
+	.id_table   = device_table,
+	.probe      = sd_probe,
+	.disconnect = gspca_disconnect,
 #ifdef CONFIG_PM
-     .suspend    = gspca_suspend,
-     .resume     = gspca_resume,
-     .reset_resume = gspca_resume,
+	.suspend    = gspca_suspend,
+	.resume     = gspca_resume,
+	.reset_resume = gspca_resume,
 #endif
 };
 
