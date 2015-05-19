@@ -421,9 +421,9 @@ exit:
 static int sd_config(struct gspca_dev *gspca_dev,
 		     const struct usb_device_id *id)
 {
-     
 	struct sd *sd = (struct sd *) gspca_dev;
 	struct cam *cam = &gspca_dev->cam;
+	int i;
 
 	sd->cmdseq = 0;
 
@@ -438,6 +438,8 @@ static int sd_config(struct gspca_dev *gspca_dev,
 		cam->bulk = 1;
 		cam->no_urb_create = 1;
 		cam->bulk_nurbs = 0;
+		for (i = 0; i < MAX_NURBS; ++i)
+		     gspca_dev->urb[i] = NULL;
 #else
 		/* setup bulk transfer */
 		cam->bulk = 1;
