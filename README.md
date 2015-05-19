@@ -9,15 +9,15 @@ Linux kernel driver for the "Kinect for Windows 2" sensor.
 
 ```
 $ make -C /lib/modules/`uname -r`/build  SUBDIRS=`pwd` SRCROOT=`pwd` modules  
+$ sudo /sbin/modprobe videodev
 $ sudo /sbin/insmod ./gspca_main.ko  
 $ sudo /sbin/insmod ./gspca_kinect2.ko  
 ```
 
 ## usage
 
-This driver provides v4l2 interface; color stream is mapped to /dev/video0, and depth is mapped to /dev/video1.
-If you have two or more devices, they shall be mappaed to /dev/videoX, where X are (2*n) for n-th color stream
-and (2*n+1) for n-th depth stream.
+This driver provides two v4l2 interfaces per a single kinect sensor; color camera is mapped to /dev/video0, and depth camera is mapped to /dev/video1.
+If you have two or more sensors, they shall be mappaed to /dev/videoX, where X are (2*n) for n-th color and (2*n+1) for n-th depth.
 
 ### capture color video
 
@@ -25,6 +25,7 @@ and (2*n+1) for n-th depth stream.
 $ ffmpeg  -framerate 30 -video_size 640x480 -i /dev/video0  test.avi  
 $ mplayer test.avi  
 ```
+
 ### misc
 
 ```
@@ -35,6 +36,11 @@ $ v4l2ucp preview
 
 # acknowledgements
 
-This driver is based on libfreenect2
+This driver is based on the following discussions and source codes;
+- libfreenect2, https://github.com/OpenKinect/libfreenect2
+- Analyzing Kinect 2 ISO data, https://groups.google.com/forum/#!topic/openkinect/8Aa8ab3aAs4
 
 Special thanks to the people in the OpenKinect project!!!
+
+
+Hiromasa YOSHIMOTO
