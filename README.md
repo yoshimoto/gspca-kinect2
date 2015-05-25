@@ -7,8 +7,18 @@ Linux kernel driver for the "Kinect for Windows 2" sensor.
 
 ## Build & install
 
+Build
 ```
 $ make -C /lib/modules/`uname -r`/build  SUBDIRS=`pwd` SRCROOT=`pwd` modules  
+```
+
+If you already installed original gspca_main driver, remove it first.
+```
+$ sudo /sbin/rmmod gspca_main
+```
+
+Then, install drivers.
+```
 $ sudo /sbin/modprobe videodev
 $ sudo /sbin/insmod ./gspca_main.ko  
 $ sudo /sbin/insmod ./gspca_kinect2.ko  
@@ -16,8 +26,7 @@ $ sudo /sbin/insmod ./gspca_kinect2.ko
 
 ## Usage
 
-This driver provides two v4l2 interfaces per a single kinect sensor; color camera is mapped to /dev/video0, and depth camera is mapped to /dev/video1.
-If you have two or more sensors, they shall be mappaed to /dev/videoX, where X are (2*n) for n-th color and (2*n+1) for n-th depth.
+This driver provides two v4l2 interfaces per a single kinect sensor; color camera is mapped to /dev/video0, and depth camera is mapped to /dev/video1. If you have two or more sensors, they shall be mappaed to /dev/videoX, where X are (2*n) for n-th color and (2*n+1) for n-th depth.
 
 ### Capture color video
 
