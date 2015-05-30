@@ -148,7 +148,7 @@ struct kinect2_color_footer {
 #define KINECT2_DEPTH_FRAME_SIZE (KINECT2_DEPTH_IMAGE_SIZE + sizeof(struct kinect2_depth_footer))
 
 #define KINECT2_GET_DEPTH_FOOTER(p) ((struct kinect2_depth_footer*)((char*)(p) + KINECT2_DEPTH_FRAME_SIZE*10 - sizeof(struct kinect2_depth_footer)))
-#define KINECT2_GET_COLOR_FOOTER(ptr,len) (struct kinect2_color_footer*)((char*)ptr + (len) - sizeof(struct kinect2_color_footer))
+#define KINECT2_GET_COLOR_FOOTER(ptr,len) ((struct kinect2_color_footer*)((char*)ptr + (len) - sizeof(struct kinect2_color_footer)))
 
 #include <linux/videodev2.h>
 
