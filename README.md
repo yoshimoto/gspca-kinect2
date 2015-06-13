@@ -9,7 +9,7 @@ Linux kernel driver for the "Kinect for Windows 2" sensor.
 
 Build
 ```
-$ make -C /lib/modules/`uname -r`/build  SUBDIRS=`pwd` SRCROOT=`pwd` modules  
+$ make -C /lib/modules/`uname -r`/build  SUBDIRS=`pwd` SRCROOT=`pwd` clean modules  
 ```
 
 If you already installed original gspca_main driver, remove it first.
