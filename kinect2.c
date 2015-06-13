@@ -35,9 +35,6 @@ MODULE_AUTHOR("Hiromasa YOSHIMOTO <hrmsysmt@gmail.com>");
 MODULE_DESCRIPTION("GSPCA/Kinect2 Sensor Device USB Camera Driver");
 MODULE_LICENSE("GPL");
 
-#define COLOR_IF 0
-#define DEPTH_IF 1
-
 /*
  * based on the OpenKinect project and libfreenect2
  */
@@ -106,10 +103,6 @@ static const struct framerates depth_framerates[] = {
 		.nrates = ARRAY_SIZE(depth_rates),
 	},
 };
-
-static void sd_stopN(struct gspca_dev *gspca_dev);
-static long sd_private_ioctl(struct file *file, void *fh,
-			     bool valid_prio, unsigned int cmd, void *arg);
 
 /**
  * Upon successful completion, send_cmd() returns
@@ -180,8 +173,7 @@ static int send_cmd(struct gspca_dev *gspca_dev, u32 cmd,
 	return result;
 }
 
-static inline void sd_color_pkt_scan(struct gspca_dev *gspca_dev,
-				     u8 *data, int datalen)
+static inline void sd_pkt_scan_color(struct gspca_dev *gspca_dev, u8 *data, int datalen)
 {
 	int type;
 
@@ -201,7 +193,7 @@ static inline void sd_color_pkt_scan(struct gspca_dev *gspca_dev,
 	gspca_frame_add(gspca_dev, type, data, datalen);
 }
 
-static inline void sd_depth_pkt_scan(struct gspca_dev *gspca_dev, u8 *data, int datalen)
+static inline void sd_pkt_scan_depth(struct gspca_dev *gspca_dev, u8 *data, int datalen)
 {
 	struct sd *sd = (struct sd *) gspca_dev;
 
@@ -241,14 +233,6 @@ discard:
 	sd->synced = 0;
 }
 
-static inline void sd_pkt_scan(struct gspca_dev *gspca_dev, u8 *data, int datalen)
-{
-	switch (gspca_dev->iface) {
-	case COLOR_IF: sd_color_pkt_scan(gspca_dev, data, datalen); break;
-	case DEPTH_IF: sd_depth_pkt_scan(gspca_dev, data, datalen); break;
-	}
-}
-
 static int
 get_iso_max_packet_size(struct gspca_dev *gspca_dev,
 			int iface, int alt, int endpoint)
@@ -286,115 +270,6 @@ static int set_isochronous_delay(struct usb_device *udev, int nanosec)
 			    nanosec, 0,
 			    NULL, 0, USB_CTRL_SET_TIMEOUT);
 }
-
-/* This function is called at probe time just before sd_init */
-static int sd_config(struct gspca_dev *gspca_dev,
-		     const struct usb_device_id *id)
-{
-	struct sd *sd = (struct sd *) gspca_dev;
-	struct cam *cam = &gspca_dev->cam;
-	int i;
-
-	sd->cmdseq = 0;
-
-	switch (gspca_dev->iface) {
-	case COLOR_IF:
-		cam->cam_mode = color_mode;
-		cam->mode_framerates = color_framerates;
-		cam->nmodes = ARRAY_SIZE(color_mode);
-
-		/* setup bulk transfer */
-		cam->bulk = 1;
-		cam->bulk_size = BULK_SIZE;
-		cam->bulk_nurbs = MAX_NURBS;
-		gspca_dev->xfer_ep = 0x083;
-
-		/* disable usb_clear_halt() in gspca.c */
-		cam->no_clear_halt = 1;
-		break;
-
-	case DEPTH_IF:
-		cam->cam_mode = depth_mode;
-		cam->mode_framerates = depth_framerates;
-		cam->nmodes = ARRAY_SIZE(depth_mode);
-		/* setup isoc transfer */
-		gspca_dev->xfer_ep = 0x084;
-		gspca_dev->pkt_size = get_iso_max_packet_size(gspca_dev,
-							      DEPTH_IF, 1, 0x84);
-		PDEBUG(D_PROBE, "isoc packet size: %d", gspca_dev->pkt_size);
-		cam->bulk = 0;
-		cam->npkt = 32;
-		cam->needs_full_bandwidth = 1;
-		break;
-	default:
-		PDEBUG(D_PROBE, "iface is %d, 0 or 1 expected\n", gspca_dev->iface);
-		return -1;
-	}
-
-	/* Replaces vdev.ioctl_ops to override vidioc_default() */
-	memcpy(&sd->ioctl_ops, gspca_dev->vdev.ioctl_ops, sizeof(sd->ioctl_ops));
-	sd->ioctl_ops.vidioc_default = sd_private_ioctl;
-	gspca_dev->vdev.ioctl_ops = &sd->ioctl_ops;
-
-	return 0;
-}
-
-/* this function is called at probe and resume time */
-static int sd_init(struct gspca_dev *gspca_dev)
-{
-	struct usb_device *udev = gspca_dev->dev;
-	int r = 0;
-
-	PDEBUG(D_PROBE, "init; iface: %d\n", gspca_dev->iface);
-
-	switch (gspca_dev->iface) {
-	case DEPTH_IF:
-		r = set_isochronous_delay(udev, 40);
-		break;
-	}
-
-	return r;
-}
-
-static int sd_start(struct gspca_dev *gspca_dev)
-{
-	struct sd *sd = (struct sd *) gspca_dev;
-	int r = 0;
-
-	PDEBUG(D_STREAM, "sd_start iface:%d\n", gspca_dev->iface);
-
-	switch (gspca_dev->iface) {
-	case COLOR_IF:
-		/* TODO; sequence number should be reset to zero. */
-		r = send_cmd(gspca_dev, KCMD_SET_STREAMING, &start_cmd, 1,
-			     NULL, 0);
-		break;
-	case DEPTH_IF:
-		sd->synced = 0;
-		r = send_cmd(gspca_dev, KCMD_START_DEPTH, NULL, 0, NULL, 0);
-		break;
-	}
-
-	return r;
-}
-
-
-static void sd_stopN(struct gspca_dev *gspca_dev)
-{
-	int r;
-
-	PDEBUG(D_STREAM, "Kinect2 stopN; iface: %d\n", gspca_dev->iface);
-
-	switch (gspca_dev->iface) {
-	case COLOR_IF:
-		r = send_cmd(gspca_dev, KCMD_SET_STREAMING, &stop_cmd, 1, NULL, 0);
-		break;
-	case DEPTH_IF:
-		r = send_cmd(gspca_dev, KCMD_STOP_DEPTH, NULL, 0, NULL, 0);
-		break;
-	}
-}
-
 
 static long sd_private_ioctl(struct file *file, void *fh,
 			     bool valid_prio, unsigned int cmd, void *arg)
@@ -451,15 +326,124 @@ out:
 	return r;
 }
 
+static int sd_config_common(struct gspca_dev *gspca_dev,
+			    const struct usb_device_id *id)
+{
+	struct sd *sd = (struct sd *) gspca_dev;
+	struct cam *cam = &gspca_dev->cam;
 
-/* sub-driver description */
-static const struct sd_desc sd_desc = {
+	PDEBUG(D_PROBE, "config_common\n");
+	sd->cmdseq = 0;
+
+	/* Replaces vdev.ioctl_ops to override vidioc_default() */
+	memcpy(&sd->ioctl_ops, gspca_dev->vdev.ioctl_ops, sizeof(sd->ioctl_ops));
+	sd->ioctl_ops.vidioc_default = sd_private_ioctl;
+	gspca_dev->vdev.ioctl_ops = &sd->ioctl_ops;
+
+	PDEBUG(D_PROBE, "config_common done\n");
+	return 0;
+}
+
+/* This function is called at probe time just before sd_init */
+static int sd_config_color(struct gspca_dev *gspca_dev,
+			   const struct usb_device_id *id)
+{
+	struct cam *cam = &gspca_dev->cam;
+
+	PDEBUG(D_PROBE, "config_color\n");
+	cam->cam_mode = color_mode;
+	cam->mode_framerates = color_framerates;
+	cam->nmodes = ARRAY_SIZE(color_mode);
+
+	/* setup bulk transfer */
+	cam->bulk = 1;
+	cam->bulk_size = BULK_SIZE;
+	cam->bulk_nurbs = MAX_NURBS;
+	gspca_dev->xfer_ep = 0x083;
+
+	/* !!FIXME!! disable usb_clear_halt() in gspca.c */
+	cam->no_clear_halt = 1;
+
+	return sd_config_common(gspca_dev, id);
+}
+
+/* This function is called at probe time just before sd_init */
+static int sd_config_depth(struct gspca_dev *gspca_dev,
+			   const struct usb_device_id *id)
+{
+	struct cam *cam = &gspca_dev->cam;
+
+	PDEBUG(D_PROBE, "config_depth\n");
+	cam->cam_mode = depth_mode;
+	cam->mode_framerates = depth_framerates;
+	cam->nmodes = ARRAY_SIZE(depth_mode);
+	/* setup isoc transfer */
+	gspca_dev->xfer_ep = 0x084;
+	gspca_dev->pkt_size = get_iso_max_packet_size(gspca_dev,
+						      DEPTH_IF, 1, 0x84);
+	PDEBUG(D_PROBE, "isoc packet size: %d", gspca_dev->pkt_size);
+	cam->bulk = 0;
+	cam->npkt = 32;
+	cam->needs_full_bandwidth = 1;
+
+	return sd_config_common(gspca_dev, id);
+}
+
+/* this function is called at probe and resume time */
+static int sd_init_color(struct gspca_dev *gspca_dev)
+{
+	return 0;
+}
+
+/* this function is called at probe and resume time */
+static int sd_init_depth(struct gspca_dev *gspca_dev)
+{
+	struct usb_device *udev = gspca_dev->dev;
+	return set_isochronous_delay(udev, 40);
+}
+
+static int sd_start_color(struct gspca_dev *gspca_dev)
+{
+	/* TODO; sequence number should be reset to zero. */
+	return send_cmd(gspca_dev, KCMD_SET_STREAMING, &start_cmd, 1,
+			NULL, 0);
+}
+
+static int sd_start_depth(struct gspca_dev *gspca_dev)
+{
+	struct sd *sd = (struct sd *) gspca_dev;
+	sd->synced = 0;
+	return send_cmd(gspca_dev, KCMD_START_DEPTH, NULL, 0, NULL, 0);
+}
+
+static void sd_stopN_color(struct gspca_dev *gspca_dev)
+{
+	send_cmd(gspca_dev, KCMD_SET_STREAMING, &stop_cmd, 1,
+		 NULL, 0);
+}
+
+static void sd_stopN_depth(struct gspca_dev *gspca_dev)
+{
+	send_cmd(gspca_dev, KCMD_STOP_DEPTH, NULL, 0, NULL, 0);
+}
+
+/* sub-driver description for color sensor */
+static const struct sd_desc sd_desc_color = {
 	.name      = MODULE_NAME,
-	.config    = sd_config,
-	.init      = sd_init,
-	.start     = sd_start,
-	.stopN     = sd_stopN,
-	.pkt_scan  = sd_pkt_scan,
+	.config    = sd_config_color,
+	.init      = sd_init_color,
+	.start     = sd_start_color,
+	.stopN     = sd_stopN_color,
+	.pkt_scan  = sd_pkt_scan_color,
+};
+/* sub-driver description for depth/ir sensor  */
+static const struct sd_desc sd_desc_depth = {
+	.name      = MODULE_NAME,
+	.config    = sd_config_depth,
+	.init      = sd_init_depth,
+	.start     = sd_start_depth,
+	.stopN     = sd_stopN_depth,
+	.pkt_scan  = sd_pkt_scan_depth,
 };
 
 static const struct usb_device_id device_table[] = {
@@ -474,8 +458,12 @@ MODULE_DEVICE_TABLE(usb, device_table);
 
 static int sd_probe(struct usb_interface *intf, const struct usb_device_id *id)
 {
-	return gspca_dev_probe2(intf, id, &sd_desc,
-				sizeof(struct sd), THIS_MODULE);
+	if (0 == intf->cur_altsetting->desc.bInterfaceNumber) 
+		return gspca_dev_probe2(intf, id, &sd_desc_color,
+					sizeof(struct sd), THIS_MODULE);
+	else
+		return gspca_dev_probe2(intf, id, &sd_desc_depth,
+					sizeof(struct sd), THIS_MODULE);
 }
 
 static struct usb_driver sd_driver = {
