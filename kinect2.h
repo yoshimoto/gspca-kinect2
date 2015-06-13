@@ -27,8 +27,7 @@
 
 #include <linux/types.h> /* __u8 etc */
 
-struct kinect2_color_camera_param
-{
+struct kinect2_color_camera_param {
 	/* unknown, always seen as 1 so far */
 	__u8 table_id;
 
@@ -67,12 +66,11 @@ struct kinect2_color_camera_param
 	/* matches the depth image aspect ratio of 512*424 very closely */
 	float table1[28 * 23 * 4];
 	float table2[28 * 23];
-} __attribute__((packed));
+} __packed;
 
 
 /* Depth camera's intrinsic & distortion parameters */
-struct kinect2_depth_camera_param
-{
+struct kinect2_depth_camera_param {
 	/* intrinsics (this is pretty certain) */
 	float fx;
 	float fy;
@@ -80,7 +78,8 @@ struct kinect2_depth_camera_param
 	float cx;
 	float cy;
 
-	/* radial distortion (educated guess based on calibration data from Kinect SDK) */
+	/* radial distortion (educated guess based on  */
+	/* calibration data from Kinect SDK) */
 	float k1;
 	float k2;
 	float p1; /* always seen as zero so far, so purely a guess */
@@ -88,12 +87,11 @@ struct kinect2_depth_camera_param
 	float k3;
 
 	float unknown1[13]; /* assumed to be always zero */
-} __attribute__((packed));
+} __packed;
 
 
 /* "P0" coefficient tables, input to the deconvolution code */
-struct kinect2_p0table
-{
+struct kinect2_p0table {
 	__u32 headersize;
 	__u32 unknown1;
 	__u32 unknown2;
@@ -116,7 +114,7 @@ struct kinect2_p0table
 	__u16 unknownC;
 
 	__u8  unknownD[];
-} __attribute__((packed));
+} __packed;
 
 struct kinect2_depth_footer {
 	__u32 magic0;
@@ -126,29 +124,32 @@ struct kinect2_depth_footer {
 	__u32 subsequence;
 	__u32 length;
 	__u32 fields[32];
-} __attribute__((packed));
+} __packed;
 
 struct kinect2_color_header {
 	__u32 sequence;
 	__u32 magic; /* 0x42424242 */
 	__u8 image[];
-} __attribute__((packed));
+} __packed;
 
 struct kinect2_color_footer {
 	__u32 sequence;
 	__u32 unknownA[3];
-	__u32 timestamp; 
+	__u32 timestamp;
 	__u32 unknownB[2];
 	__u32 magic;       /* 0x42424242 */
 	__u32 length;
 	__u32 unknownC[4];
-} __attribute__((packed));
+} __packed;
 
 #define KINECT2_DEPTH_IMAGE_SIZE (512*424*11/8)
-#define KINECT2_DEPTH_FRAME_SIZE (KINECT2_DEPTH_IMAGE_SIZE + sizeof(struct kinect2_depth_footer))
+#define KINECT2_DEPTH_FRAME_SIZE \
+	(KINECT2_DEPTH_IMAGE_SIZE + sizeof(struct kinect2_depth_footer))
 
-#define KINECT2_GET_DEPTH_FOOTER(p) ((struct kinect2_depth_footer*)((char*)(p) + KINECT2_DEPTH_FRAME_SIZE*10 - sizeof(struct kinect2_depth_footer)))
-#define KINECT2_GET_COLOR_FOOTER(ptr,len) ((struct kinect2_color_footer*)((char*)ptr + (len) - sizeof(struct kinect2_color_footer)))
+#define KINECT2_GET_DEPTH_FOOTER(p)					\
+	((struct kinect2_depth_footer *)((char *)(p) + KINECT2_DEPTH_FRAME_SIZE*10 - sizeof(struct kinect2_depth_footer)))
+#define KINECT2_GET_COLOR_FOOTER(ptr, len)				\
+	((struct kinect2_color_footer *)((char *)(ptr) + (len) - sizeof(struct kinect2_color_footer)))
 
 #include <linux/videodev2.h>
 
@@ -156,11 +157,14 @@ struct kinect2_color_footer {
 struct kinect2_ioctl_req {
 	int   len;
 	void *ptr;
-} __attribute__((packed));
+} __packed;
 
-#define VIDIOC_KINECT2_COLOR_PARAM	_IOWR('V', BASE_VIDIOC_PRIVATE + 0, struct kinect2_ioctl_req)
-#define VIDIOC_KINECT2_DEPTH_PARAM	_IOWR('V', BASE_VIDIOC_PRIVATE + 1, struct kinect2_ioctl_req)
-#define VIDIOC_KINECT2_P0TABLE		_IOWR('V', BASE_VIDIOC_PRIVATE + 2, struct kinect2_ioctl_req)
+#define VIDIOC_KINECT2_COLOR_PARAM	_IOWR('V', BASE_VIDIOC_PRIVATE + 0,\
+					      struct kinect2_ioctl_req)
+#define VIDIOC_KINECT2_DEPTH_PARAM	_IOWR('V', BASE_VIDIOC_PRIVATE + 1,\
+					      struct kinect2_ioctl_req)
+#define VIDIOC_KINECT2_P0TABLE		_IOWR('V', BASE_VIDIOC_PRIVATE + 2,\
+					      struct kinect2_ioctl_req)
 
 
 #endif /* _UAPI__LINUX_KINECT2_H */

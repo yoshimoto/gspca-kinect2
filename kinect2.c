@@ -59,7 +59,7 @@ struct request {
 	u32 cmd;
 	u32 reserved0;
 	u32 param[8];
-} __attribute__((packed));
+} __packed;
 
 /* specific camera descriptor */
 struct sd {
@@ -78,35 +78,35 @@ struct sd {
 #define V4L2_PIX_FMT_Y11BPACK    v4l2_fourcc('Y', '1', '1', 'B')
 
 static const struct v4l2_pix_format color_mode[] = {
-     {1920, 1080, V4L2_PIX_FMT_JPEG, V4L2_FIELD_NONE,
-      .bytesperline = 1920,
-      .sizeimage = 1920 * 1080,
-      .colorspace = V4L2_COLORSPACE_JPEG},
+	{1920, 1080, V4L2_PIX_FMT_JPEG, V4L2_FIELD_NONE,
+	 .bytesperline = 1920,
+	 .sizeimage = 1920 * 1080,
+	 .colorspace = V4L2_COLORSPACE_JPEG},
 };
 
 static const struct v4l2_pix_format depth_mode[] = {
-     {512, 424, V4L2_PIX_FMT_Y11BPACK, V4L2_FIELD_NONE,
-      .bytesperline = 512 * 11 / 8,
-      .sizeimage = KINECT2_DEPTH_FRAME_SIZE*10,
-      .colorspace = V4L2_COLORSPACE_SRGB},
+	{512, 424, V4L2_PIX_FMT_Y11BPACK, V4L2_FIELD_NONE,
+	 .bytesperline = 512 * 11 / 8,
+	 .sizeimage = KINECT2_DEPTH_FRAME_SIZE*10,
+	 .colorspace = V4L2_COLORSPACE_SRGB},
 };
 
 static const u8 depth_rates[] = {30};
 static const u8 color_rates[] = {30};
 static const struct framerates color_framerates[] = {
-	{ 	.rates = color_rates,
-		.nrates = ARRAY_SIZE(color_rates),
+	{.rates = color_rates,
+	 .nrates = ARRAY_SIZE(color_rates),
 	},
 };
 static const struct framerates depth_framerates[] = {
-	{ 	.rates = depth_rates,
-		.nrates = ARRAY_SIZE(depth_rates),
+	{.rates = depth_rates,
+	 .nrates = ARRAY_SIZE(depth_rates),
 	},
 };
 
 /**
  * Upon successful completion, send_cmd() returns
- * the number of bytes written in the "replybuf". Otherwise, 
+ * the number of bytes written in the "replybuf". Otherwise,
  *  < 0 is returned as error code.
  */
 static int send_cmd(struct gspca_dev *gspca_dev, u32 cmd,
@@ -128,7 +128,7 @@ static int send_cmd(struct gspca_dev *gspca_dev, u32 cmd,
 	req->cmdseq = cpu_to_le32(sd->cmdseq);
 	req->reply_len = cpu_to_le32(reply_len);
 	req->cmd = cpu_to_le32(cmd);
-	for (i=0; i<num_param; ++i)
+	for (i = 0; i < num_param; ++i)
 		req->param[i] = cpu_to_le32(param[i]);
 
 	res = usb_bulk_msg(udev, usb_sndbulkpipe(udev, 0x002),
@@ -173,35 +173,41 @@ static int send_cmd(struct gspca_dev *gspca_dev, u32 cmd,
 	return result;
 }
 
-static inline void sd_pkt_scan_color(struct gspca_dev *gspca_dev, u8 *data, int datalen)
+static inline void sd_pkt_scan_color(struct gspca_dev *gspca_dev,
+				     u8 *data, int datalen)
 {
 	int type;
 
 	if (gspca_dev->image_len == 0) {
-		struct kinect2_color_header *h = (struct kinect2_color_header*)data;
+		struct kinect2_color_header *h =
+			(struct kinect2_color_header *) data;
 		if (0x42424242 != h->magic) {
 			PDEBUG(D_STREAM, "bad magic\n");
-			return ;
+			return;
 		}
 	}
 
-	if (BULK_SIZE != datalen) 
+	if (BULK_SIZE != datalen)
 		type = LAST_PACKET;
-	else 
+	else
 		type = gspca_dev->image_len?INTER_PACKET:FIRST_PACKET;
 
 	gspca_frame_add(gspca_dev, type, data, datalen);
 }
 
-static inline void sd_pkt_scan_depth(struct gspca_dev *gspca_dev, u8 *data, int datalen)
+static inline void sd_pkt_scan_depth(struct gspca_dev *gspca_dev,
+				     u8 *data, int datalen)
 {
 	struct sd *sd = (struct sd *) gspca_dev;
 
 	if (gspca_dev->pkt_size != datalen) {
 		struct kinect2_depth_footer *f;
-		f = (struct kinect2_depth_footer*)(data + datalen - sizeof(*f));
+
+		f = (struct kinect2_depth_footer *)(data
+						    + datalen - sizeof(*f));
 		if (0x00 != f->magic0) {
-			PDEBUG(D_PACK, " bad footer %d/%d\n", datalen, gspca_dev->pkt_size);
+			PDEBUG(D_PACK, " bad footer %d/%d\n",
+			       datalen, gspca_dev->pkt_size);
 			goto discard;
 		} else if (KINECT2_DEPTH_IMAGE_SIZE != f->length) {
 			PDEBUG(D_PACK, " wrong length\n");
@@ -209,17 +215,19 @@ static inline void sd_pkt_scan_depth(struct gspca_dev *gspca_dev, u8 *data, int 
 		} else {
 			if (sd->synced) {
 				gspca_frame_add(gspca_dev,
-						(9==f->subsequence)?LAST_PACKET:INTER_PACKET,
+						(9 == f->subsequence) ?
+						LAST_PACKET : INTER_PACKET,
 						data, datalen);
 			} else {
-				if (9==f->subsequence) 
+				if (9 == f->subsequence)
 					sd->synced = 1;
 			}
 		}
 	} else {
 		if (sd->synced) {
 			gspca_frame_add(gspca_dev,
-					(0==gspca_dev->image_len)?FIRST_PACKET:INTER_PACKET,
+					(0 == gspca_dev->image_len) ?
+					FIRST_PACKET : INTER_PACKET,
 					data, datalen);
 		} else {
 			goto discard;
@@ -241,6 +249,7 @@ get_iso_max_packet_size(struct gspca_dev *gspca_dev,
 	int sz = 1024;
 	struct usb_interface *intf;
 	struct usb_host_interface *host;
+
 	intf = usb_ifnum_to_if(gspca_dev->dev, iface);
 	if (!intf) {
 		PDEBUG(D_PROBE, "usb_ifnum_to_if(%d) failed", iface);
@@ -248,12 +257,14 @@ get_iso_max_packet_size(struct gspca_dev *gspca_dev,
 	}
 	host = usb_altnum_to_altsetting(intf, alt);
 	if (!host) {
-		PDEBUG(D_PROBE, "usb_altnum_to_altsetting(%d,%d) failed", iface, alt);
+		PDEBUG(D_PROBE, "usb_altnum_to_altsetting(%d,%d) failed",
+		       iface, alt);
 		goto exit;
 	}
 	for (i = 0; i < host->desc.bNumEndpoints; ++i) {
 		if (host->endpoint[i].desc.bEndpointAddress == endpoint &&
-		    (host->endpoint[i].desc.bmAttributes & USB_ENDPOINT_XFERTYPE_MASK) == USB_ENDPOINT_XFER_ISOC) {
+		    (host->endpoint[i].desc.bmAttributes &
+		     USB_ENDPOINT_XFERTYPE_MASK) == USB_ENDPOINT_XFER_ISOC) {
 			sz = host->endpoint[i].ss_ep_comp.wBytesPerInterval;
 		}
 	}
@@ -261,14 +272,15 @@ exit:
 	return sz;
 }
 
-// if no super speed hubs in between, then it is equal to tTPTransmissionDelay(=40ns)
+/* if no super speed hubs in between,  */
+/* then it is equal to tTPTransmissionDelay(=40ns) */
 static int set_isochronous_delay(struct usb_device *udev, int nanosec)
 {
-     // for details see USB 3.1 r1 spec section 9.4.11
-     return usb_control_msg(udev, usb_sndctrlpipe(udev,0),
-			    USB_REQ_SET_ISOCH_DELAY, USB_RECIP_DEVICE,
-			    nanosec, 0,
-			    NULL, 0, USB_CTRL_SET_TIMEOUT);
+	/* for details see USB 3.1 r1 spec section 9.4.11 */
+	return usb_control_msg(udev, usb_sndctrlpipe(udev, 0),
+			       USB_REQ_SET_ISOCH_DELAY, USB_RECIP_DEVICE,
+			       nanosec, 0,
+			       NULL, 0, USB_CTRL_SET_TIMEOUT);
 }
 
 static long sd_private_ioctl(struct file *file, void *fh,
@@ -288,7 +300,7 @@ static long sd_private_ioctl(struct file *file, void *fh,
 	int r;
 	void *buf = NULL;
 	/* req is pointer to kernel space */
-	struct kinect2_ioctl_req * req = arg;
+	struct kinect2_ioctl_req *req = arg;
 	int num = _IOC_NR(cmd) - BASE_VIDIOC_PRIVATE;
 
 	if (num < 0 || ARRAY_SIZE(table) <= num) {
@@ -321,8 +333,7 @@ static long sd_private_ioctl(struct file *file, void *fh,
 		r = -EFAULT;
 	}
 out:
-	if (buf)
-		kfree(buf);
+	kfree(buf);
 	return r;
 }
 
@@ -336,7 +347,8 @@ static int sd_config_common(struct gspca_dev *gspca_dev,
 	sd->cmdseq = 0;
 
 	/* Replaces vdev.ioctl_ops to override vidioc_default() */
-	memcpy(&sd->ioctl_ops, gspca_dev->vdev.ioctl_ops, sizeof(sd->ioctl_ops));
+	memcpy(&sd->ioctl_ops, gspca_dev->vdev.ioctl_ops,
+	       sizeof(sd->ioctl_ops));
 	sd->ioctl_ops.vidioc_default = sd_private_ioctl;
 	gspca_dev->vdev.ioctl_ops = &sd->ioctl_ops;
 
@@ -380,7 +392,7 @@ static int sd_config_depth(struct gspca_dev *gspca_dev,
 	/* setup isoc transfer */
 	gspca_dev->xfer_ep = 0x084;
 	gspca_dev->pkt_size = get_iso_max_packet_size(gspca_dev,
-						      DEPTH_IF, 1, 0x84);
+						      1, 1, 0x84);
 	PDEBUG(D_PROBE, "isoc packet size: %d", gspca_dev->pkt_size);
 	cam->bulk = 0;
 	cam->npkt = 32;
@@ -398,8 +410,7 @@ static int sd_init_color(struct gspca_dev *gspca_dev)
 /* this function is called at probe and resume time */
 static int sd_init_depth(struct gspca_dev *gspca_dev)
 {
-	struct usb_device *udev = gspca_dev->dev;
-	return set_isochronous_delay(udev, 40);
+	return set_isochronous_delay(gspca_dev->dev, 40);
 }
 
 static int sd_start_color(struct gspca_dev *gspca_dev)
@@ -412,6 +423,7 @@ static int sd_start_color(struct gspca_dev *gspca_dev)
 static int sd_start_depth(struct gspca_dev *gspca_dev)
 {
 	struct sd *sd = (struct sd *) gspca_dev;
+
 	sd->synced = 0;
 	return send_cmd(gspca_dev, KCMD_START_DEPTH, NULL, 0, NULL, 0);
 }
@@ -450,15 +462,16 @@ static const struct usb_device_id device_table[] = {
 	/* kinect for windows 2 */
 	{USB_DEVICE(0x045e, 0x02d8)},
 	/* kinect for windows 2 preview? */
-	{USB_DEVICE(0x045e, 0x02c4)}, 
+	{USB_DEVICE(0x045e, 0x02c4)},
 	{}
 };
 
 MODULE_DEVICE_TABLE(usb, device_table);
 
-static int sd_probe(struct usb_interface *intf, const struct usb_device_id *id)
+static int sd_probe(struct usb_interface *intf,
+		    const struct usb_device_id *id)
 {
-	if (0 == intf->cur_altsetting->desc.bInterfaceNumber) 
+	if (0 == intf->cur_altsetting->desc.bInterfaceNumber)
 		return gspca_dev_probe2(intf, id, &sd_desc_color,
 					sizeof(struct sd), THIS_MODULE);
 	else
