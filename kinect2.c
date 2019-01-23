@@ -120,7 +120,7 @@ static int send_cmd(struct gspca_dev *gspca_dev, u32 cmd,
 	int res, i;
 
 	if (num_param > ARRAY_SIZE(req->param)) {
-		PDEBUG(D_USBO, "send_cmd: too many params (%d)\n", num_param);
+		gspca_dbg(gspca_dev, D_USBO, "send_cmd: too many params (%d)\n", num_param);
 		return -1;
 	}
 
@@ -135,7 +135,7 @@ static int send_cmd(struct gspca_dev *gspca_dev, u32 cmd,
 			   req, sizeof(*req) - sizeof(req->param) + num_param*4,
 			   &actual_len, USB_CTRL_SET_TIMEOUT);
 	if (res < 0) {
-		PDEBUG(D_USBO, "send_cmd: send failed (%d)\n", res);
+		gspca_dbg(gspca_dev, D_USBO, "send_cmd: send failed (%d)\n", res);
 		return res;
 	}
 
@@ -145,7 +145,7 @@ static int send_cmd(struct gspca_dev *gspca_dev, u32 cmd,
 				   replybuf, reply_len,
 				   &actual_len, USB_CTRL_SET_TIMEOUT);
 		if (res < 0) {
-			PDEBUG(D_USBO, "send_cmd: recv failed (%d)\n", res);
+			gspca_dbg(gspca_dev, D_USBO, "send_cmd: recv failed (%d)\n", res);
 			return res;
 		}
 		result = actual_len;
@@ -156,15 +156,15 @@ static int send_cmd(struct gspca_dev *gspca_dev, u32 cmd,
 			   sd->response, sizeof(sd->response),
 			   &actual_len, USB_CTRL_SET_TIMEOUT);
 	if (res < 0) {
-		PDEBUG(D_USBO, "send_cmd: read failed (%d)\n", res);
+		gspca_dbg(gspca_dev, D_USBO, "send_cmd: read failed (%d)\n", res);
 		return res;
 	}
 
 	if (cpu_to_le32(RESPONSE_MAGIC) != sd->response[0]) {
-		PDEBUG(D_USBO, "send_cmd: Bad magic %08x\n", sd->response[0]);
+		gspca_dbg(gspca_dev, D_USBO, "send_cmd: Bad magic %08x\n", sd->response[0]);
 		return -1;
 	} else if (cpu_to_le32(sd->cmdseq) != sd->response[1]) {
-		PDEBUG(D_USBO, "send_cmd: Bad cmd seq %08x\n", sd->response[1]);
+		gspca_dbg(gspca_dev, D_USBO, "send_cmd: Bad cmd seq %08x\n", sd->response[1]);
 		return -1;
 	}
 
@@ -182,7 +182,7 @@ static inline void sd_pkt_scan_color(struct gspca_dev *gspca_dev,
 		struct kinect2_color_header *h =
 			(struct kinect2_color_header *) data;
 		if (0x42424242 != h->magic) {
-			PDEBUG(D_STREAM, "bad magic\n");
+			gspca_dbg(gspca_dev, D_STREAM, "bad magic\n");
 			return;
 		}
 	}
@@ -206,11 +206,11 @@ static inline void sd_pkt_scan_depth(struct gspca_dev *gspca_dev,
 		f = (struct kinect2_depth_footer *)(data
 						    + datalen - sizeof(*f));
 		if (0x00 != f->magic0) {
-			PDEBUG(D_PACK, " bad footer %d/%d\n",
+			gspca_dbg(gspca_dev, D_PACK, " bad footer %d/%d\n",
 			       datalen, gspca_dev->pkt_size);
 			goto discard;
 		} else if (KINECT2_DEPTH_IMAGE_SIZE != f->length) {
-			PDEBUG(D_PACK, " wrong length\n");
+			gspca_dbg(gspca_dev, D_PACK, " wrong length\n");
 			goto discard;
 		} else {
 			if (sd->synced) {
@@ -252,12 +252,12 @@ get_iso_max_packet_size(struct gspca_dev *gspca_dev,
 
 	intf = usb_ifnum_to_if(gspca_dev->dev, iface);
 	if (!intf) {
-		PDEBUG(D_PROBE, "usb_ifnum_to_if(%d) failed", iface);
+		gspca_dbg(gspca_dev, D_PROBE, "usb_ifnum_to_if(%d) failed\n", iface);
 		goto exit;
 	}
 	host = usb_altnum_to_altsetting(intf, alt);
 	if (!host) {
-		PDEBUG(D_PROBE, "usb_altnum_to_altsetting(%d,%d) failed",
+		gspca_dbg(gspca_dev, D_PROBE, "usb_altnum_to_altsetting(%d,%d) failed\n",
 		       iface, alt);
 		goto exit;
 	}
@@ -324,12 +324,12 @@ static long sd_private_ioctl(struct file *file, void *fh,
 		/* req->ptr is pointer to user space */
 		r = copy_to_user((void __user *)req->ptr, buf, table[num].len);
 		if (r) {
-			PDEBUG(D_PROBE, "copy_to_user() failed\n");
+			gspca_dbg(gspca_dev, D_PROBE, "copy_to_user() failed\n");
 			r = -EFAULT;
 		}
 	} else {
-		PDEBUG(D_PROBE, "send_cmd() returns %d, expected %d",
-		       r, table[num].len);
+		gspca_dbg(gspca_dev, D_PROBE, "send_cmd() returns %d, expected %d\n",
+			  r, table[num].len);
 		r = -EFAULT;
 	}
 out:
@@ -343,7 +343,7 @@ static int sd_config_common(struct gspca_dev *gspca_dev,
 	struct sd *sd = (struct sd *) gspca_dev;
 	struct cam *cam = &gspca_dev->cam;
 
-	PDEBUG(D_PROBE, "config_common\n");
+	gspca_dbg(gspca_dev, D_PROBE, "config_common\n");
 	sd->cmdseq = 0;
 
 	/* Replaces vdev.ioctl_ops to override vidioc_default() */
@@ -352,7 +352,7 @@ static int sd_config_common(struct gspca_dev *gspca_dev,
 	sd->ioctl_ops.vidioc_default = sd_private_ioctl;
 	gspca_dev->vdev.ioctl_ops = &sd->ioctl_ops;
 
-	PDEBUG(D_PROBE, "config_common done\n");
+	gspca_dbg(gspca_dev, D_PROBE, "config_common done\n");
 	return 0;
 }
 
@@ -362,7 +362,7 @@ static int sd_config_color(struct gspca_dev *gspca_dev,
 {
 	struct cam *cam = &gspca_dev->cam;
 
-	PDEBUG(D_PROBE, "config_color\n");
+	gspca_dbg(gspca_dev, D_PROBE, "config_color\n");
 	cam->cam_mode = color_mode;
 	cam->mode_framerates = color_framerates;
 	cam->nmodes = ARRAY_SIZE(color_mode);
@@ -385,7 +385,7 @@ static int sd_config_depth(struct gspca_dev *gspca_dev,
 {
 	struct cam *cam = &gspca_dev->cam;
 
-	PDEBUG(D_PROBE, "config_depth\n");
+	gspca_dbg(gspca_dev, D_STREAM, "config_depth\n");
 	cam->cam_mode = depth_mode;
 	cam->mode_framerates = depth_framerates;
 	cam->nmodes = ARRAY_SIZE(depth_mode);
@@ -393,7 +393,7 @@ static int sd_config_depth(struct gspca_dev *gspca_dev,
 	gspca_dev->xfer_ep = 0x084;
 	gspca_dev->pkt_size = get_iso_max_packet_size(gspca_dev,
 						      1, 1, 0x84);
-	PDEBUG(D_PROBE, "isoc packet size: %d", gspca_dev->pkt_size);
+	gspca_dbg(gspca_dev, D_PROBE, "isoc packet size: %d\n", gspca_dev->pkt_size);
 	cam->bulk = 0;
 	cam->npkt = 32;
 	cam->needs_full_bandwidth = 1;
